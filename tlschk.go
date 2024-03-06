@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/chzyer/readline"
+	"github.com/mattn/go-isatty"
 )
 
 func main() {
@@ -18,7 +19,10 @@ func main() {
 		}
 	}()
 
-	cfg := Settings{Now: time.Now()}
+	cfg := Settings{
+		Now:   time.Now(),
+		IsTTY: isatty.IsTerminal(os.Stdout.Fd()),
+	}
 
 	flag.BoolVar(&cfg.Details, FLAG_DETAILS, false, "full cert details in JSON format")
 	flag.BoolVar(&cfg.FullChain, FLAG_FULLCHAIN, false, "report all certs in chain")

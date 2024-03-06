@@ -5,13 +5,14 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	"net"
 	"os"
 	"strings"
 	"time"
 )
 
 const (
-	FLAG_DETAILS   = "details"
+	FLAG_DETAILS   = "detail"
 	FLAG_FULLCHAIN = "fullchain"
 	FLAG_VERIFY    = "verify"
 )
@@ -21,6 +22,7 @@ type Settings struct {
 	FullChain bool
 	Verify    bool
 	Now       time.Time
+	IsTTY     bool
 }
 
 func (cfg Settings) ReportErr(domain string, err error) {
@@ -57,11 +59,19 @@ func (pCfg *Settings) ProcessLine(line string) {
 	}
 }
 
+var g_pDialer *net.Dialer
+
+func init() {
+	g_pDialer = new(net.Dialer)
+	g_pDialer.KeepAlive = -1
+	g_pDialer.Timeout = time.Second * 10
+}
+
 func GetConnState(domain string) (tls.ConnectionState, error) {
 
-	// TODO: set timeout
 	// TODO: intercept first ctrl-c to cancel dial without closing
-	conn, err := tls.Dial(
+	conn, err := tls.DialWithDialer(
+		g_pDialer,
 		"tcp",
 		domain,
 		&tls.Config{InsecureSkipVerify: true},
@@ -96,35 +106,39 @@ func (cfg Settings) ReportDomain(domain string) {
 	}
 }
 
-func (cfg Settings) ReportCert(domain string, certIx int, cert *x509.Certificate) {
+func (cfg Settings) ReportCert(domain string, certIx int, cert *x509.Certificate) error {
 
 	shaPubkey := sha256.Sum256(cert.RawSubjectPublicKeyInfo)
 	shaCert := sha256.Sum256(cert.Raw)
 
 	ri := ReportItem{
-		CertIx:    certIx,
-		Domain:    domain,
-		Issuer:    cert.Issuer.String(),
-		NotBefore: cert.NotBefore,
-		NotAfter:  cert.NotAfter,
-		PubkeySig: shaPubkey[:],
-		CertSig:   shaCert[:],
+		Query:       domain,
+		ChainIndex:  certIx,
+		CommonName:  cert.Subject.String(),
+		Issuer:      cert.Issuer.String(),
+		PubkeySig:   shaPubkey[:],
+		CertSig:     shaCert[:],
+		Certificate: cert,
+		NotBefore:   cert.NotBefore,
+		NotAfter:    cert.NotAfter,
 	}
 
+	ri.TTLDays, ri.TTLInfo = CalcTTLDays(cert.NotBefore, cert.NotAfter, cfg.Now)
+
+	// TODO: document that revocation lists aren't checked
+	// TODO: document 'signed by unknown authority' when -fullchain not set
+
 	if cfg.Verify {
-		_, ri.Valid = cert.Verify(x509.VerifyOptions{})
+		if _, verr := cert.Verify(x509.VerifyOptions{}); verr != nil {
+			ri.VerifyError = verr.Error()
+		} else {
+			ri.Verified = true
+		}
 	}
 
 	if cfg.Details {
-		// TODO: JSON out
+		return ri.ReportJSON(cfg.IsTTY)
 	} else {
-		ri.ReportSimple(cfg.Now)
+		return ri.ReportSimple(cfg.IsTTY)
 	}
-
-	/*
-		TODO:
-			- chain presentation (JSON vs tabular)
-			- present subject domain in output
-			- SNI?
-	*/
 }
